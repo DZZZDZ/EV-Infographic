@@ -1,0 +1,734 @@
+---
+title: "Electric Vehicle Trends in Washington State"
+subtitle: "How Washington State is Moving Toward an Electric Future?"
+author: 
+  - "Dingzhe Zhou"
+  - "Ganquan Sun"
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    theme: cosmo
+    smooth-scroll: true
+    number-sections: false
+editor: visual
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyr)
+library(plotly)
+library(crosstalk)
+library(htmltools)
+library(scales)
+library(htmlwidgets)
+library(stringr)
+library(sf)
+library(tigris)
+library(leaflet)
+options(tigris_use_cache = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Data5002A2")
+```
+
+```{r}
+ev <- read.csv("Electric_Vehicle_Population_Data.csv")
+# summary(ev)
+```
+
+------------------------------------------------------------------------
+
+Electric vehicles are rapidly transforming transportation in Washington State. Each year, a large number of new EVs replace traditional gasoline cars, a shift driven by state incentives, clean hydropower, and growing environmental awareness among consumers.
+
+However, what does this transformation actually look like? Which counties are adopting electric vehicles the fastest? And which brands are leading the market? And how far can these electric cars go now?
+
+In this article, we illustrate the electrification trends in Washington State, highlighting how battery electric vehicles (BEVs) and plug-in hybrid electric vehicles (PHEVs) have spread statewide, as well as variations across different regions and brands.
+
+This data comes from the Washington State Department of Licensing (DOL) and is publicly available via [data.wa.gov](https://data.wa.gov/Transportation/Electric-Vehicle-Population-Data/f6w7-q2d2/about_data).
+
+<br>
+
+## Electric Vehicle Registrations
+
+*How fast are electric vehicles becoming popular in Washington State?*
+
+### Statewide Distribution
+
+In 2024, electric vehicle adoption in Washington State has exhibited distinct geographic disparities.
+
+King County, home to Seattle, has the highest number of registered EVs due to higher income levels, more developed charging infrastructure, and greater environmental awareness.
+
+Neighboring Snohomish and Pierce counties have seen significant growth, while eastern and rural areas remain relatively behind.
+
+This spatial pattern highlights the key role of urbanization and policy incentives have driven the state’s electrification transition.
+
+#### **EV Registrations by County in Washington State, 2024**
+
+```{r}
+# Added 2023 to include the missing county boundary for 2024, ensuring map completeness (2023 data are used only for geometry, not for registration counts)
+years_keep <- 2023:2024
+
+cnty_year <- ev %>%
+  filter(Model.Year %in% years_keep) %>%
+  mutate(
+    County = str_squish(County),
+    County = str_to_title(County),
+    County = str_replace(County, "\\s+County$", "")
+  ) %>%
+  count(Model.Year, County, name = "Count") %>%
+  complete(Model.Year = years_keep, County, fill = list(Count = 0)) %>%
+  group_by(Model.Year) %>%
+  mutate(
+    StateTotal = sum(Count, na.rm = TRUE),
+    Share = ifelse(StateTotal > 0, Count / StateTotal, 0),
+    Rank  = ifelse(Count > 0, min_rank(desc(Count)), NA_integer_)
+  ) %>%
+  ungroup()
+
+wa_counties <- tigris::counties(state = "WA", cb = TRUE, class = "sf") %>%
+  transmute(County = NAME, geometry) %>%
+  st_transform(4326)
+
+map_data <- cnty_year %>%
+  left_join(wa_counties, by = "County") %>%
+  st_as_sf() %>%
+  st_transform(4326)
+
+sd_map <- SharedData$new(
+  map_data,
+  key   = ~paste(County, Model.Year, sep = "__"),
+  group = "map_ev"
+)
+
+
+pal <- colorBin(
+  palette = "Greens",
+  domain  = sd_map$origData()$Count,
+  bins    = c(0, 10, 50, 200, 500, 1000, 2000, 5000, 10000, Inf),
+  na.color = "#ffffff"
+)
+
+bb <- sf::st_bbox(wa_counties)
+pad <- 0.15
+# W S E N
+lng1 <- as.numeric(bb["xmin"]) - pad
+lat1 <- as.numeric(bb["ymin"]) - 0.5
+lng2 <- as.numeric(bb["xmax"]) + pad
+lat2 <- as.numeric(bb["ymax"]) + pad
+
+m <- leaflet(sd_map,
+             options = leafletOptions(
+               minZoom = 6.2, maxZoom = 11,
+               worldCopyJump = FALSE
+             )) %>%
+  addProviderTiles(
+    "CartoDB.Positron",
+    options = providerTileOptions(
+      noWrap = TRUE,
+      bounds = list(
+        list(lat1, lng1),
+        list(lat2, lng2)
+      )
+    )
+  ) %>%
+  addPolygons(
+  fillColor = ~pal(Count),
+  fillOpacity = 0.85,
+  color = "#ffffff", weight = 1, opacity = 1,
+  label = ~lapply(sprintf(
+    "%s County<br>Year: %d<br>EVs: %s (Rank #%s)<br>Share of state: %.1f%%",
+    County, Model.Year, formatC(Count, big.mark = ","),
+    ifelse(is.na(Rank), "–", as.character(Rank)),
+    100 * Share
+    ), htmltools::HTML),
+  highlightOptions = highlightOptions(weight = 2, bringToFront = TRUE)
+  ) %>%
+  addLegend(
+    pal = pal, values = ~Count, opacity = 0.9, title = "Registrations",
+    position = "bottomright", labFormat = labelFormat(big.mark = ",")
+  ) %>%
+  setMaxBounds(lng1, lat1, lng2, lat2) %>%
+  fitBounds(lng1, lat1, lng2, lat2)
+
+browsable(m)
+```
+
+### King County Breakdown
+
+In 2024, electric vehicle registrations in King County also show significant regional disparities.
+
+Seattle and its neighboring cities, such as Bellevue, Redmond, and Kirkland, have the most registered EVs in the thousands. These areas have higher population densities, greater income levels, and more extensive charging infrastructure.
+
+In contrast, southern and eastern cities like Enumclaw and Maple Valley registered fewer EVs, reflecting their more rural characteristics and limited charging coverage.
+
+Overall, this distribution pattern illustrates that electric vehicle adoption is highly concentrated in the Seattle metropolitan area, highlighting the key role of urbanization and infrastructure development in driving the transition to electrification.
+
+#### **EV Registrations by City in King County, 2024**
+
+```{r}
+
+years_keep <- 2023:2024
+
+king_city_year <- ev %>%
+  filter(Model.Year %in% years_keep) %>%
+  mutate(
+    County = str_squish(County) |> str_to_title(),
+    City   = str_squish(City)   |> str_to_title()
+  ) %>%
+  filter(!is.na(County), County == "King", !is.na(City), City != "") %>%
+  count(Model.Year, City, name = "Count") %>%
+  group_by(Model.Year) %>%
+  mutate(
+    CountyTotal = sum(Count, na.rm = TRUE),
+    Share = ifelse(CountyTotal > 0, Count / CountyTotal, 0),
+    Rank  = ifelse(Count > 0, min_rank(desc(Count)), NA_integer_)
+  ) %>%
+  ungroup()
+
+wa_counties <- tigris::counties(state = "WA", cb = TRUE, class = "sf") %>%
+  st_transform(4326)
+
+king_boundary <- wa_counties %>%
+  filter(NAME == "King") %>%
+  select(geometry)
+
+wa_places <- tigris::places(state = "WA", cb = TRUE, class = "sf") %>%
+  st_transform(4326)
+
+king_places <- st_filter(wa_places, king_boundary) %>%
+  transmute(City = NAME, geometry)
+
+grid_all <- expand_grid(Model.Year = years_keep, City = king_places$City)
+
+city_year_full <- grid_all %>%
+  left_join(king_city_year, by = c("Model.Year", "City")) %>%
+  mutate(
+    Count = replace_na(Count, 0),
+    .by = Model.Year
+  ) %>%
+  group_by(Model.Year) %>%
+  mutate(
+    CountyTotal = sum(Count, na.rm = TRUE),
+    Share = ifelse(CountyTotal > 0, Count / CountyTotal, 0),
+    Rank  = ifelse(Count > 0, min_rank(desc(Count)), NA_integer_)
+  ) %>%
+  ungroup()
+
+map_city <- city_year_full %>%
+  left_join(king_places, by = "City") %>%
+  st_as_sf() %>%
+  st_transform(4326)
+
+sd_city <- SharedData$new(
+  map_city,
+  key   = ~paste(City, Model.Year, sep = "__"),
+  group = "map_ev_city"
+)
+
+pal_city <- colorBin(
+  palette = "Greens",
+  domain  = sd_city$origData()$Count,
+  bins    = c(0, 10, 50, 100, 200, 500, 1000, 2000, 5000, Inf),
+  na.color = "#ffffff"
+)
+
+bb <- sf::st_bbox(king_boundary)
+lng1 <- as.numeric(bb["xmin"]) - 0.55
+lat1 <- as.numeric(bb["ymin"]) - 0.05
+lng2 <- as.numeric(bb["xmax"]) + 0.2
+lat2 <- as.numeric(bb["ymax"]) + 0.2
+
+m_city <- leaflet(sd_city,
+                  options = leafletOptions(
+                    minZoom = 9, maxZoom = 13,
+                    worldCopyJump = FALSE
+                  )) %>%
+  addProviderTiles(
+    "CartoDB.Positron",
+    options = providerTileOptions(
+      noWrap = TRUE,
+      bounds = list(list(lat1, lng1), list(lat2, lng2))
+    )
+  ) %>%
+  addPolygons(
+    fillColor = ~pal_city(Count),
+    fillOpacity = 0.85,
+    color = "#ffffff", weight = 1, opacity = 1,
+    label = ~lapply(sprintf(
+      "%s<br>Year: %d<br>EVs: %s (Rank #%s)<br>Share of county: %.1f%%",
+      City, Model.Year, formatC(Count, big.mark = ","),
+      ifelse(is.na(Rank), "–", as.character(Rank)),
+      100 * Share
+    ), htmltools::HTML),
+    highlightOptions = highlightOptions(weight = 2, bringToFront = TRUE)
+  ) %>%
+  addLegend(
+    pal = pal_city, values = ~Count, opacity = 0.9, title = "Registrations",
+    position = "bottomright", labFormat = labelFormat(big.mark = ",")
+  ) %>%
+  setMaxBounds(lng1, lat1, lng2, lat2) %>%
+  fitBounds(lng1, lat1, lng2, lat2)
+
+browsable(m_city)
+```
+
+### Trends in BEVs and PHEVs
+
+Over the past decade, Washington State has witnessed a transformation toward electrified transportation.
+
+From just a few tens of electric vehicles in 2010 to over 50,000 registered in 2023, the growth has been remarkable. In particular, battery electric vehicles (BEVs) have grown rapidly, far outpacing plug-in hybrid electric vehicles (PHEVs) since 2020.
+
+This trend reflects advances in battery technology, improvements in charging infrastructure, and growing public confidence in pure electric transportation.
+
+By 2024, BEVs are now mainstream, signaling Washington State's steady progress toward a zero-emission transportation future.
+
+#### **BEVs vs PHEVs in Washington State, 2010 to 2024**
+
+```{r}
+type_levels <- c("Battery Electric Vehicle (BEV)", "Plug-in Hybrid Electric Vehicle (PHEV)")
+
+trend_type <- ev %>%
+  filter(between(Model.Year, 2010, 2024),
+         Electric.Vehicle.Type %in% type_levels) %>%
+  count(Model.Year, Electric.Vehicle.Type, name = "Count") %>%
+  mutate(
+    Electric.Vehicle.Type = factor(Electric.Vehicle.Type, levels = type_levels),
+    TypeShort = dplyr::recode(Electric.Vehicle.Type,
+                              "Battery Electric Vehicle (BEV)" = "BEV",
+                              "Plug-in Hybrid Electric Vehicle (PHEV)" = "PHEV")
+  ) %>%
+  arrange(Model.Year, Electric.Vehicle.Type)
+
+
+col <- c("#d58d79", "#5c88bc")
+
+sd <- SharedData$new(trend_type)
+
+ctl_type <- div(
+  filter_checkbox(
+    id = "type",
+    label = "Vehicle Type",
+    sharedData = sd,
+    group = ~Electric.Vehicle.Type,
+    inline = TRUE
+  )
+)
+
+ctl_year <- div(
+  align = "center",
+  filter_slider(
+    id = "year",
+    label = NULL,
+    sharedData = sd,
+    column = ~Model.Year,
+    step = 1,
+    width = "80%"
+  )
+)
+
+p_lines <- plot_ly(
+  data = sd,
+  x = ~Model.Year,
+  y = ~Count,
+  color = ~TypeShort,
+  colors = col,
+  type = "scatter",
+  mode = "lines+markers"
+) %>%
+  layout(
+    xaxis = list(title = "Year", zeroline = FALSE, tickmode = "linear", dtick = 2, gridcolor = "#e6e6e6", showgrid = FALSE),
+    yaxis = list(title = "Registrations", separatethousands = TRUE, gridcolor = "#e6e6e6"),
+    legend = list(orientation = "v", x = 1.02, y = 1.00),
+    margin = list(l = 60, r = 20, t = 30, b = 50),
+    plot_bgcolor = "#ffffff",
+    paper_bgcolor = "#ffffff",
+    hovermode = "x unified"
+  ) %>%
+  config(displayModeBar = "hover", displaylogo = FALSE)
+
+p_bars <- plot_ly(
+  data = sd,
+  x = ~Model.Year,
+  y = ~Count,
+  color = ~TypeShort,
+  colors = col,
+  type = "bar"
+) %>%
+  layout(
+    barmode = "stack",
+    bargap = 0.15,
+    xaxis = list(title = "Year", tickmode = "linear", dtick = 2, zeroline = FALSE, gridcolor = "#e6e6e6", showgrid = FALSE),
+    yaxis = list(title = "Registrations", separatethousands = TRUE, gridcolor = "#e6e6e6"),
+    legend = list(orientation = "v", x = 1.02, y = 1.00),
+    margin = list(l = 60, r = 20, t = 30, b = 50),
+    plot_bgcolor = "#ffffff",
+    paper_bgcolor = "#ffffff",
+    hovermode = "x unified"
+  ) %>%
+  config(displayModeBar = "hover", displaylogo = FALSE)
+
+browsable(
+  tagList(
+    ctl_type,
+    bscols(p_lines),
+    bscols(p_bars),
+    div(style = "margin-left:-30px; margin-right:60px;", ctl_year)
+  )
+)
+```
+
+<br>
+
+## EV Brand Landscape
+
+*Which EV Brands Power Washington’s Roads?*
+
+### Brands Powering Electric Revolution
+
+From 2010 to 2024, major electric vehicle (EV) brands in Washington State have shown distinct registration trends.
+
+Tesla's registrations rose sharply starting in 2018, peaking in 2023 to hold a dominant market position. Other brands, including Toyota, Ford, Kia, Hyundai, Jeep, and BMW, are steadily expanding their market shares, reflecting market diversification and growing consumer acceptance of electric vehicles.
+
+#### **Tesla Dominates Washington’s Roads**
+
+```{r}
+brand_year <- ev %>%
+  filter(
+    between(Model.Year, 2010, 2024),
+    !is.na(Make)
+  ) %>%
+  mutate(
+    Make  = toupper(str_squish(Make)),
+    Model.Year = as.integer(Model.Year)
+  ) %>%
+  count(Model.Year, Make, name = "Registrations") %>%
+  complete(Model.Year = 2010:2024, Make, fill = list(Registrations = 0))
+
+top5_makes <- brand_year %>%
+  filter(Model.Year == 2024) %>%
+  slice_max(Registrations, n = 7, with_ties = FALSE) %>%
+  pull(Make)
+
+
+plot_data <- brand_year %>%
+  filter(Make %in% top5_makes)
+
+make_order <- brand_year %>%
+  filter(Model.Year == 2024, Make %in% top5_makes) %>%
+  arrange(desc(Registrations)) %>%
+  pull(Make)
+
+plot_data <- plot_data %>%
+  mutate(Make = factor(Make, levels = make_order))
+
+cols <- RColorBrewer::brewer.pal(n = 5, name = "Dark2")
+
+sd_brand <- SharedData$new(plot_data, key = ~ paste(Make, Model.Year))
+
+ctl_make <- div(
+  filter_checkbox(
+    id = "make",
+    label = "Brands",
+    sharedData = sd_brand,
+    group = ~ Make,
+    inline = TRUE
+  )
+)
+
+ctl_year <- div(
+  align = "center",
+  filter_slider(
+    id = "year",
+    label = NULL,
+    sharedData = sd_brand,
+    column = ~ Model.Year,
+    step = 1,
+    width = "80%"
+  )
+)
+
+p_top5 <- plot_ly(
+  data  = sd_brand,
+  x     = ~Model.Year,
+  y     = ~Registrations,
+  color = ~Make,
+  colors = cols,
+  type  = "scatter",
+  mode  = "lines+markers",
+  hovertext = ~paste0(
+    "<b>", Make, "</b>",
+    "<br>Year: ", Model.Year,
+    "<br>Registrations: ", Registrations
+  ),
+  hoverinfo = "text"
+) %>%
+  layout(
+    xaxis = list(title = "Year", tickmode = "linear", dtick = 2,
+                 zeroline = FALSE, showgrid = FALSE),
+    yaxis = list(title = "Registrations", separatethousands = TRUE, rangemode = "tozero"),
+    legend = list(orientation = "v", x = 1.02, y = 1.00),
+    margin = list(l = 60, r = 20, t = 50, b = 50),
+    plot_bgcolor = "#ffffff",
+    paper_bgcolor = "#ffffff",
+    hovermode = "x unified"
+  ) %>%
+  config(displayModeBar = "hover", displaylogo = FALSE)
+
+browsable(tagList(
+  ctl_make,
+  p_top5,
+  div(style = "margin-left:-30px; margin-right:60px;", ctl_year)
+))
+```
+
+### Brand Strategies Differ in EV Market
+
+In Washington’s 2024 EV market, major brands display clear differences between Battery Electric Vehicles (BEVs) and Plug-in Hybrid Electric Vehicles (PHEVs). From left to right, the brands are Tesla, Ford, Kia, Toyota, and Jeep.
+
+Tesla remains a pure BEV brand, with all registrations being fully electric. Ford and Kia exhibit a balanced transition strategy, with BEVs accounting for 95% and 83% of their EV registrations, respectively.
+
+In contrast, Toyota and Jeep are dominated by PHEVs, where hybrids represent over 70% and 98% of their total EVs.
+
+These differences reflect distinct brand philosophies: while Tesla and Ford are pushing toward full electrification, Toyota and Jeep are still leveraging hybrid technology as a bridge toward an electrically powered future.
+
+#### **BEV vs PHEV Share by Brands (Tesla, Ford, Kia, Toyota, Jeep), 2024**
+
+```{r}
+brands <- c("TESLA", "FORD", "KIA", "TOYOTA", "JEEP")
+
+col_map <- c("BEV" = "#f4a261", "PHEV" = "#d9d9d9")
+
+ev_brand_2024 <- ev %>%
+  filter(Model.Year == 2024,
+         toupper(Make) %in% brands,
+         Electric.Vehicle.Type %in% c("Battery Electric Vehicle (BEV)",
+                                      "Plug-in Hybrid Electric Vehicle (PHEV)")) %>%
+  mutate(
+    Make = factor(toupper(Make), levels = brands),
+    TypeShort = ifelse(grepl("BEV", Electric.Vehicle.Type), "BEV", "PHEV")
+  ) %>%
+  count(Make, TypeShort, name = "Count") %>%
+  group_by(Make) %>%
+  mutate(Share = Count / sum(Count)) %>%
+  ungroup()
+
+p <- plot_ly()
+
+for (i in seq_along(brands)) {
+  p <- p %>%
+    add_pie(
+      data = subset(ev_brand_2024, Make == brands[i]),
+      labels = ~TypeShort,
+      values = ~Share,
+      name = brands[i],
+      marker = list(colors = col_map),
+      textinfo = "label+percent",
+      hoverinfo = "label+percent+name",
+      domain = list(row = 0, column = i - 1)
+    )
+}
+
+p <- p %>%
+  layout(
+    grid = list(rows = 1, columns = length(brands)),
+    showlegend = TRUE,
+    legend = list(
+      orientation = "h",
+      x = 0.5, xanchor = "center",
+      y = -0.1, yanchor = "top"
+    ),
+    margin = list(l = 0, r = 30, t = 0, b = 0)
+  ) %>%
+  config(displaylogo = FALSE)
+
+browsable(p)
+```
+
+<br>
+
+## Electric Range Beyond the Early Limits
+
+*The End of Range Anxiety? A Milestone in Electric Vehicle Maturity*
+
+### PHEV Range by Top Brands
+
+In 2025, major plug-in hybrid electric vehicle (PHEV) brands in Washington State showed differences in average electric range.
+
+Mercedes-Benz and Toyota led the field, with average ranges exceeding 40 miles, followed closely by BMW and Volvo.
+
+In 2024, Jeep and Toyota were the most registered PHEV brands, reflecting their stable strength and market appeal in hybrid technology.
+
+However, the 2025 registration data are not yet complete, so their reference value is limited. Compared with 2024, most brands show stable average ranges, with the overall rankings changing little.
+
+#### **PHEV Brands by Average Electric Range, 2024**
+
+```{r}
+top10_makes_2025 <- ev %>%
+  filter(Electric.Vehicle.Type == "Plug-in Hybrid Electric Vehicle (PHEV)",
+         Model.Year == 2025,
+         !is.na(Electric.Range),
+         Electric.Range > 0) %>%
+  group_by(Make) %>%
+  summarise(Records = n(), .groups = "drop") %>%
+  arrange(desc(Records)) %>%
+  slice_head(n = 7) %>%
+  pull(Make)
+
+phev_2425 <- ev %>%
+  filter(Electric.Vehicle.Type == "Plug-in Hybrid Electric Vehicle (PHEV)",
+         Model.Year %in% c(2024, 2025),
+         !is.na(Electric.Range),
+         Electric.Range > 0,
+         Make %in% top10_makes_2025) %>%
+  group_by(Make, Model.Year) %>%
+  summarise(
+    AvgRange = mean(Electric.Range, na.rm = TRUE),
+    Records = n(),
+    .groups = "drop"
+  )
+
+order_2025 <- phev_2425 %>%
+  filter(Model.Year == 2025) %>%
+  arrange(AvgRange) %>%
+  pull(Make)
+
+p <- ggplot(phev_2425,
+            aes(x = factor(Make, levels = order_2025),
+                y = AvgRange,
+                fill = factor(Model.Year),
+                text = paste0(
+                  "<b>", Make, "</b>",
+                  "<br>Year: ", Model.Year,
+                  "<br>Average Range: ", round(AvgRange, 1), " miles",
+                  "<br>Records: ", Records))) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Average Electric Range (miles)",
+    fill = NULL
+  ) +
+  scale_fill_manual(values = c("2024" = "#d9d9d9", "2025" = "#5c88bc")) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.major.y = element_blank()
+  )
+
+ggplotly(p, tooltip = "text") %>%
+  layout(
+    hovermode = "y unified",
+    margin = list(l = 0, r = 50, t = 30, b = 50)
+  ) %>%
+  config(displaylogo = FALSE)
+```
+
+### Tesla Leads the Charge
+
+As plug-in hybrid (PHEV) technology provides the foundation for electrification, battery electric vehicles (BEVs) begin to redefine the standards for driving range.
+
+Before 2021, the range of BEVs varied widely across brands, with early models averaging less than 30 miles. By 2021, nearly all newly registered BEVs easily surpassed this threshold, marking the maturity and widespread adoption of pure electric technology.
+
+Therefore, the Department of Licensing no longer collects range metrics starting from 2021, indicating that this once most important performance indicator has become a fundamental standard for modern electric vehicles.
+
+Tesla models perfectly exemplify this trend: their range performance has improved every year, with the Model S surpassing 320 miles in 2020. According to the [official Tesla website](https://www.tesla.com/compare), all current models now exceed 300 miles of EPA range, reflecting the steady advancement of pure electric technology.
+
+#### **Tesla Models: Electric Range Trends, 2013 to 2020**
+
+```{r}
+
+tesla_range <- ev %>%
+  filter(
+    between(Model.Year, 2013, 2021),
+    grepl("Battery Electric", Electric.Vehicle.Type, ignore.case = TRUE),
+    toupper(Make) == "TESLA"
+  ) %>%
+  mutate(
+    Electric.Range = na_if(Electric.Range, 0)
+  ) %>%
+  group_by(Model.Year, Model) %>%
+  summarise(
+    Range = median(Electric.Range, na.rm = TRUE),
+    N = dplyr::n(),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(Range))
+
+model_order <- tesla_range %>%
+  group_by(Model) %>%
+  summarise(first_year = min(Model.Year), .groups = "drop") %>%
+  arrange(first_year) %>%
+  pull(Model)
+
+tesla_range <- tesla_range %>%
+  mutate(Model = factor(Model, levels = model_order))
+
+cols <- RColorBrewer::brewer.pal(
+  n = max(3, length(levels(tesla_range$Model))),
+  name = "Dark2"
+)
+
+sd_tsla <- SharedData$new(tesla_range, key = ~ paste(Model, Model.Year))
+
+ctl_model <- div(
+  filter_checkbox(
+    id = "model",
+    label = "Tesla Model",
+    sharedData = sd_tsla,
+    group = ~ Model,
+    inline = TRUE
+  )
+)
+
+ctl_year <- div(
+  align = "center",
+  filter_slider(
+    id = "year",
+    label = NULL,
+    sharedData = sd_tsla,
+    column = ~ Model.Year,
+    step = 1,
+    width = "80%"
+  )
+)
+
+p_tesla <- plot_ly(
+  data  = sd_tsla,
+  x     = ~Model.Year,
+  y     = ~Range,
+  color = ~Model,
+  colors = cols,
+  type  = "scatter",
+  mode  = "lines+markers",
+  hovertext = ~paste0(
+    "<b>", Model, "</b>",
+    "<br>Year: ", Model.Year,
+    "<br>Range: ", round(Range), " miles",
+    "<br>Records: ", N
+  ),
+  hoverinfo = "text"
+) %>%
+  layout(
+    xaxis = list(title = "Year", zeroline = FALSE, tickmode = "linear", dtick = 1, gridcolor = "#e6e6e6", showgrid = FALSE),
+    yaxis = list(title = "Electric Range (miles)", separatethousands = TRUE, gridcolor = "#e6e6e6"),
+    legend = list(orientation = "v", x = 1.02, y = 1.00),
+    margin = list(l = 60, r = 20, t = 40, b = 50),
+    plot_bgcolor = "#ffffff",
+    paper_bgcolor = "#ffffff",
+    hovermode = "x unified"
+  ) %>%
+  config(displayModeBar = "hover", displaylogo = FALSE)
+
+browsable(
+  tagList(
+    ctl_model,
+    p_tesla,
+    div(style = "margin-left:-30px; margin-right:60px;", ctl_year)
+  )
+)
+```
